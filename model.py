@@ -3,9 +3,11 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch
 from torch.autograd import Variable
 import copy
+from transformers import EncoderDecoderModel, EncoderDecoderConfig
+from transformers.modeling_outputs import Seq2SeqLMOutput
 
 
 class LabelSmoothingLoss(nn.Module):
