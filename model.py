@@ -30,9 +30,7 @@ class LabelSmoothingLoss(nn.Module):
 class BertSeq2Seq(nn.Module):
     """
         Build Seqence-to-Sequence.
-
         Parameters:
-
         * `encoder`- encoder of seq2seq model. e.g. bert
         * `decoder`- decoder of seq2seq model. e.g. bert
         * `config`- configuration of encoder model.
@@ -42,14 +40,14 @@ class BertSeq2Seq(nn.Module):
         * `eos_id`- end of symbol ids in target for beam search.
     """
 
-    def __init__(self, encoder, decoder, encoder_config, decoder_config, beam_size=None, max_length=None, sos_id=None, eos_id=None):
+    def __init__(self, encoder, decoder, config, beam_size=None, max_length=None, sos_id=None, eos_id=None):
         super(BertSeq2Seq, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.config = decoder_config
+        self.config = config
         self.register_buffer("bias", torch.tril(torch.ones(2048, 2048)))
-        self.dense = nn.Linear(self.config.hidden_size, self.config.hidden_size)
-        self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.lsm = nn.LogSoftmax(dim=-1)
         self.tie_weights()
 
@@ -71,112 +69,59 @@ class BertSeq2Seq(nn.Module):
             Export to TorchScript can't handle parameter sharing so we are cloning them instead.
         """
         self._tie_or_clone_weights(self.lm_head,
-                                   self.decoder.embeddings.word_embeddings)
+                                   self.encoder.embeddings.word_embeddings)
 
-    def forward(
-        self,
-        input_ids,
-        attention_mask=None,
-        decoder_input_ids=None,
-        decoder_attention_mask=None,
-        encoder_outputs=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        decoder_inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        **kwargs,
-    ):
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        kwargs_encoder = {argument: value for argument, value in kwargs.items() if not argument.startswith("decoder_")}
-
-        kwargs_decoder = {
-            argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
-        }
-        encoder_outputs = self.encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                inputs_embeds=inputs_embeds,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-                **kwargs_encoder,
-            )
-        encoder_hidden_states = encoder_outputs[0]
-        if labels is not None:
-            decoder_outputs = self.decoder(
-                input_ids=decoder_input_ids,
-                attention_mask=decoder_attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=attention_mask,
-                inputs_embeds=decoder_inputs_embeds,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                use_cache=use_cache,
-                past_key_values=past_key_values,
-                return_dict=return_dict,
-                **kwargs_decoder,
-            )
-            hidden_states = torch.tanh(self.dense(decoder_outputs[0]))
+    def forward(self, source_ids=None, source_mask=None, target_ids=None, target_mask=None, args=None):
+        outputs = self.encoder(source_ids, attention_mask=source_mask)
+        encoder_output = outputs[0]
+        if target_ids is not None:
+            out = self.decoder(input_ids=target_ids,
+                               attention_mask=target_mask,
+                               encoder_hidden_states=encoder_output,
+                               encoder_attention_mask=source_mask)
+            hidden_states = torch.tanh(self.dense(out[0]))
             lm_logits = self.lm_head(hidden_states)
             # Shift so that tokens < n predict n
-            active_loss = decoder_attention_mask[..., 1:].contiguous().view(-1) == 1
+            active_loss = target_mask[..., 1:].ne(0).view(-1) == 1
             shift_logits = lm_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            
+            shift_labels = target_ids[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, shift_logits.size(-1))
-            shift_labels = torch.where(
-                    active_loss, shift_labels.view(-1), torch.tensor(loss_fct.ignore_index).type_as(shift_labels)
-            )
-            loss = loss_fct(shift_logits, shift_labels)
+            loss_fct = LabelSmoothingLoss(self.config.vocab_size, smoothing=0.1)
+            # loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1))[active_loss],
+                            shift_labels.view(-1)[active_loss])
 
-            if not return_dict:
-              return ((loss,) + decoder_outputs + encoder_outputs)
-            return Seq2SeqLMOutput(
-                loss=loss,
-                logits=lm_logits,
-                past_key_values=decoder_outputs.past_key_values,
-                decoder_hidden_states=decoder_outputs.hidden_states,
-                decoder_attentions=decoder_outputs.attentions,
-                cross_attentions=decoder_outputs.cross_attentions,
-                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-                encoder_hidden_states=encoder_outputs.hidden_states,
-                encoder_attentions=encoder_outputs.attentions,
-            )
+            outputs = loss, loss * active_loss.sum(), active_loss.sum()
+            return outputs
         else:
             # Predict
             preds = []
             zero = torch.cuda.LongTensor(1).fill_(0)
-            for i in range(input_ids.shape[0]):
-                context = encoder_hidden_states[i:i + 1, :]
-                context_mask = attention_mask[i:i + 1, :]
+            for i in range(source_ids.shape[0]):
+                context = encoder_output[i:i + 1, :]
+                context_mask = source_mask[i:i + 1, :]
                 beam = Beam(self.beam_size, self.sos_id, self.eos_id)
-                source_ids = beam.getCurrentState()
+                input_ids = beam.getCurrentState()
                 context = context.repeat(self.beam_size, 1, 1)
                 context_mask = context_mask.repeat(self.beam_size, 1)
                 for _ in range(self.max_length):
                     if beam.done():
                         break
-                    
-                    attn_mask = source_ids > 0
-                    out = self.decoder(input_ids=source_ids,
+
+                    attn_mask = input_ids > 0
+                    out = self.decoder(input_ids=input_ids,
                                        attention_mask=attn_mask,
                                        encoder_hidden_states=context,
                                        encoder_attention_mask=context_mask)
                     hidden_states = torch.tanh(self.dense(out[0]))[:, -1, :]
                     out = self.lsm(self.lm_head(hidden_states)).data
                     beam.advance(out)
-                    source_ids.data.copy_(source_ids.data.index_select(0, beam.getCurrentOrigin()))
-                    source_ids = torch.cat((source_ids, beam.getCurrentState()), -1)
+                    input_ids.data.copy_(input_ids.data.index_select(0, beam.getCurrentOrigin()))
+                    input_ids = torch.cat((input_ids, beam.getCurrentState()), -1)
                 hyp = beam.getHyp(beam.getFinal())
                 pred = beam.buildTargetTokens(hyp)[:self.beam_size]
-                pred = [torch.cat([x.view(-1) for x in p] + [zero] * (self.max_length - len(p))).view(1, -1) for p in pred]
+                pred = [torch.cat([x.view(-1) for x in p] + [zero] * (self.max_length - len(p))).view(1, -1) for p in
+                        pred]
                 preds.append(torch.cat(pred, 0).unsqueeze(0))
 
             preds = torch.cat(preds, 0)
