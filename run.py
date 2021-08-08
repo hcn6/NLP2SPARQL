@@ -35,13 +35,13 @@ from torch.utils.data import DataLoader, SequentialSampler, RandomSampler, Tenso
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import (AdamW, get_linear_schedule_with_warmup,
-                          RobertaConfig, RobertaModel, RobertaTokenizer, BertConfig, BertModel, BertTokenizer)
+                          RobertaConfig, RobertaModel, AutoTokenizer, RobertaTokenizer, BertConfig, BertModel, BertTokenizer)
 
 import bleu
 from model import Seq2Seq, BertSeq2Seq
 
 MODEL_CLASSES = {'roberta': (RobertaConfig, RobertaModel, RobertaTokenizer),
-                 'bert': (BertConfig, BertModel, BertTokenizer)}
+                 'bert': (BertConfig, BertModel, AutoTokenizer)}
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
