@@ -40,7 +40,7 @@ from transformers import (AdamW, get_linear_schedule_with_warmup,
 import bleu
 from model import Seq2Seq, BertSeq2Seq
 
-MODEL_CLASSES = {'roberta': (RobertaConfig, RobertaModel, RobertaTokenizer),
+MODEL_CLASSES = {'roberta': (RobertaConfig, RobertaModel, AutoTokenizer),
                  'bert': (BertConfig, BertModel, AutoTokenizer)}
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
