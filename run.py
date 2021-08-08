@@ -296,7 +296,7 @@ def main():
 
     if args.do_train:
         # Prepare training data loader
-        train_examples = read_examples(args.train_filename + ".sparql", args.train_filename + ".en")
+        train_examples = read_examples(args.train_filename + ".Body", args.train_filename + ".Sum")
         train_features = convert_examples_to_features(train_examples, tokenizer, args, stage='train')
         all_source_ids = torch.tensor([f.source_ids for f in train_features], dtype=torch.long)
         all_source_mask = torch.tensor([f.source_mask for f in train_features], dtype=torch.long)
@@ -371,7 +371,7 @@ def main():
                 if 'dev_bleu' in dev_dataset:
                     eval_examples, eval_data = dev_dataset['dev_bleu']
                 else:
-                    eval_examples = read_examples(args.dev_filename + ".sparql", args.dev_filename + ".en")
+                    eval_examples = read_examples(args.dev_filename + ".Body", args.dev_filename + ".Sum")
                     eval_examples = random.sample(eval_examples, min(1000, len(eval_examples)))
                     eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='test')
                     all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
